@@ -564,7 +564,7 @@ static inline u32 fe_empty_txd(struct fe_tx_ring *ring)
 	barrier();
 	return (u32)(ring->tx_ring_size -
 			((ring->tx_next_idx - ring->tx_free_idx) &
-			 (ring->tx_ring_size - 1)));
+			 (ring->tx_ring_size - 1)) - 1);
 }
 
 struct fe_map_state {
@@ -898,6 +898,8 @@ static int fe_poll_rx(struct napi_struct *napi, int budget,
 	struct fe_rx_dma *rxd, trxd;
 	int done = 0, pad;
 
+	fe_reg_w32(rx_intr, FE_REG_FE_INT_STATUS);
+
 	if (netdev->features & NETIF_F_RXCSUM)
 		checksum_bit = soc->checksum_bit;
 	else
@@ -961,7 +963,7 @@ static int fe_poll_rx(struct napi_struct *napi, int budget,
 					       RX_DMA_VID(trxd.rxd3));
 
 #ifdef CONFIG_NET_RALINK_OFFLOAD
-		if (mtk_offload_check_rx(priv, skb, trxd.rxd4) == 0) {
+		if (ra_offload_check_rx(priv, skb, trxd.rxd4) == 0) {
 #endif
 			stats->rx_packets++;
 			stats->rx_bytes += pktlen;
@@ -990,9 +992,6 @@ release_desc:
 		done++;
 	}
 
-	if (done < budget)
-		fe_reg_w32(rx_intr, FE_REG_FE_INT_STATUS);
-
 	return done;
 }
 
@@ -1006,6 +1005,8 @@ static int fe_poll_tx(struct fe_priv *priv, int budget, u32 tx_intr,
 	int done = 0;
 	u32 idx, hwidx;
 	struct fe_tx_ring *ring = &priv->tx_ring;
+
+	fe_reg_w32(tx_intr, FE_REG_FE_INT_STATUS);
 
 	idx = ring->tx_free_idx;
 	hwidx = fe_reg_r32(FE_REG_TX_DTX_IDX0);
@@ -1030,9 +1031,7 @@ static int fe_poll_tx(struct fe_priv *priv, int budget, u32 tx_intr,
 	if (idx == hwidx) {
 		/* read hw index again make sure no new tx packet */
 		hwidx = fe_reg_r32(FE_REG_TX_DTX_IDX0);
-		if (idx == hwidx)
-			fe_reg_w32(tx_intr, FE_REG_FE_INT_STATUS);
-		else
+		if (idx != hwidx)
 			*tx_again = 1;
 	} else {
 		*tx_again = 1;
@@ -1112,7 +1111,11 @@ poll_again:
 	return rx_done;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 static void fe_tx_timeout(struct net_device *dev)
+#else
+static void fe_tx_timeout(struct net_device *dev, unsigned int txqueue)
+#endif
 {
 	struct fe_priv *priv = netdev_priv(dev);
 	struct fe_tx_ring *ring = &priv->tx_ring;
@@ -1309,7 +1312,7 @@ static int fe_open(struct net_device *dev)
 	fe_int_enable(priv->soc->tx_int | priv->soc->rx_int);
 	netif_start_queue(dev);
 #ifdef CONFIG_NET_RALINK_OFFLOAD
-	mtk_ppe_probe(priv);
+	ra_ppe_probe(priv);
 #endif
 
 	return 0;
@@ -1348,7 +1351,7 @@ static int fe_stop(struct net_device *dev)
 	fe_free_dma(priv);
 
 #ifdef CONFIG_NET_RALINK_OFFLOAD
-	mtk_ppe_remove(priv);
+	ra_ppe_remove(priv);
 #endif
 
 	return 0;
